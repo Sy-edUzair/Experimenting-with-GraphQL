@@ -22,8 +22,7 @@ class CrawlerOrchestrator:
       - IDeduplicator    → how to deduplicate (injected)
 
     This means in tests you can pass:
-      FakeGitHubFetcher, StaticQueryGenerator, InMemoryDeduplicator
-    ...and test the orchestration logic without any real network/DB calls.
+      FakeGitHubFetcher, StaticQueryGenerator, InMemoryDeduplicator and test the orchestration logic without any real network/DB calls.
     """
 
     def __init__(self,fetcher:IRepoFetcher,generator:IQueryGenerator,deduplicator:IDeduplicator,max_concurrent: int = MAX_CONCURRENT) -> None:

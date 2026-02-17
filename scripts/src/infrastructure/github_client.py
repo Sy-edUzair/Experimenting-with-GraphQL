@@ -84,12 +84,9 @@ class GitHubClient(IRepoFetcher):
 
         GitHub sends:          We store as:
           "nameWithOwner"   →  name_with_owner
-          "stargazerCount"  →  star_count
-          "primaryLanguage" →  primary_language (flattened)
-          "isPrivate"       →  is_private
-          "createdAt"       →  created_at (parsed to datetime)
+          "stargazerCount"  →  star_count etc.
 
-        If GitHub renames a field, fix it HERE only — nowhere else.
+        If GitHub renames a field, fix it HERE only - nowhere else.
         """
         try:
             return GitHubRepo(
@@ -117,9 +114,9 @@ class GitHubClient(IRepoFetcher):
         Fetch one page of GitHub search results with retry logic.
 
         Returns:
-            repos          — clean GitHubRepo domain objects
+            repos — clean GitHubRepo domain objects
             has_next_page  — whether more pages exist
-            end_cursor     — bookmark to pass as cursor on next call
+            end_cursor — bookmark to pass as cursor on next call
             rate_remaining — remaining API quota
         """
         variables = {
