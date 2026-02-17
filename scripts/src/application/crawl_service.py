@@ -44,7 +44,7 @@ class CrawlApplicationService:
                 total += len(batch)
 
                 elapsed = (datetime.now(tz=timezone.utc) - started_at).total_seconds()
-                rate    = total / elapsed if elapsed > 0 else 0
+                rate = total / elapsed if elapsed > 0 else 0
                 log.info("Saved %d repos | running total: %d/%d | %.1f repos/sec",len(batch), total, target, rate)
                 if total >= target:
                     break

@@ -8,7 +8,7 @@ from src.domain.interfaces import IRepoFetcher, IQueryGenerator, IDeduplicator
 
 log = logging.getLogger(__name__)
 
-MAX_CONCURRENT= 15    
+MAX_CONCURRENT= 10
 RATE_LIMIT_SLEEP = 60  
 
 
@@ -26,8 +26,8 @@ class CrawlerOrchestrator:
     """
 
     def __init__(self,fetcher:IRepoFetcher,generator:IQueryGenerator,deduplicator:IDeduplicator,max_concurrent: int = MAX_CONCURRENT) -> None:
-        self._fetcher      = fetcher
-        self._generator    = generator
+        self._fetcher = fetcher
+        self._generator = generator
         self._deduplicator = deduplicator
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -82,7 +82,7 @@ class CrawlerOrchestrator:
         - Progress: caller sees repos arriving in real time
         - Resilience: if it crashes at 80k, you've already saved 80k
         """
-        queries    = self._generator.generate()
+        queries = self._generator.generate()
         chunk_size = self._max_concurrent * 4
         stop_event = asyncio.Event()
 
