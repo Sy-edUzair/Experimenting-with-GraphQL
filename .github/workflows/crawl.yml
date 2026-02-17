@@ -80,22 +80,6 @@ jobs:
         run: |
           python scripts/dump_db.py
 
-          echo "--- Database summary ---"
-          psql \
-            --host=localhost \
-            --port=5432 \
-            --username=postgres \
-            --dbname=github_crawler \
-            --command="SELECT status, repos_fetched, started_at, finished_at FROM crawl_runs ORDER BY id DESC LIMIT 5;"
-
-          echo "--- Top 10 repos by stars ---"
-          psql \
-            --host=localhost \
-            --port=5432 \
-            --username=postgres \
-            --dbname=github_crawler \
-            --command="SELECT name_with_owner, star_count FROM latest_star_counts ORDER BY star_count DESC LIMIT 10;"
-
       # 7. Upload CSV as artifact
       - name: Upload star counts artifact
         uses: actions/upload-artifact@v4
