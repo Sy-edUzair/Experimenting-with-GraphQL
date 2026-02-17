@@ -10,8 +10,8 @@ A high-performance GitHub repository crawler that collects star counts for **100
 |---|---|
 | Target repositories | 100,000 |
 | Crawl duration | ~8 minutes |
-| Throughput | ~200 repos/second |
-| Concurrency | 15 simultaneous GraphQL queries |
+| Throughput | ~260 repos/second |
+| Concurrency | 20 simultaneous GraphQL queries |
 | Query space | 1,760+ unique search combinations |
 
 ---
@@ -123,19 +123,19 @@ orchestrator = CrawlerOrchestrator(
 
 This means every class is independently testable with fake/mock implementations.
 
-### 4. Async Concurrency — 15 Simultaneous Queries
+### 4. Async Concurrency — 20 Simultaneous Queries
 
-The single biggest performance improvement. Instead of waiting for each query to finish before starting the next, 15 queries run simultaneously using `asyncio` + `httpx.AsyncClient`.
+The single biggest performance improvement. Instead of waiting for each query to finish before starting the next, 20 queries run simultaneously using `asyncio` + `httpx.AsyncClient`.
 
 ```
 Sequential (old):  [query 1]──[query 2]──[query 3]──[query 4]...  83 min
 Concurrent (new):  [query 1 ]
                    [query 2 ]   all finish around the same time    ~8 min
                    [query 3 ]
-                   ... ×15
+                   ... ×20
 ```
 
-`asyncio.Semaphore(15)` acts as a gate — at most 15 queries in flight at once.
+`asyncio.Semaphore(20)` acts as a gate — at most 20 queries in flight at once.
 
 ### 5. Multi-Dimensional Query Generation
 
