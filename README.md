@@ -302,6 +302,8 @@ python dump_db.py
 ```
 
 ---
+## Answers to Questions:
+The answers to question on how to scale schema for 500M repos is in the file "Answers to scale schema.pdf"
 
 ## Querying the Data
 
