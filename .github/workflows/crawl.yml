@@ -71,7 +71,7 @@ jobs:
         run: |
           TARGET=${{ github.event.inputs.target_repos || '100000' }}
           echo "Starting crawl for ${TARGET} repositories …"
-          python scripts/crawl_stars.py --target "${TARGET}"
+          python scripts/main.py --target "${TARGET}"
       # 6. Dump DB contents to CSV
       - name: Dump database to CSV
         env:
