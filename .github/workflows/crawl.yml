@@ -1,0 +1,127 @@
+name: GitHub Repository Star Crawler
+
+on:
+  # Run daily at 02:00 UTC to keep data fresh -> 07:00 AM in karachi
+  schedule:
+    - cron: "0 2 * * *"
+  # For manual testing
+  workflow_dispatch:
+    inputs:
+      target_repos:
+        description: "Number of repos to crawl (default: 100000)"
+        required: false
+        default: "100000"
+
+env:
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/github_crawler
+
+jobs:
+  crawl:
+    name: Crawl GitHub Stars
+    runs-on: ubuntu-latest
+    # PostgreSQL service container
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: github_crawler
+        ports:
+          - 5432:5432
+        # In my case I used -p 5433:5432 in docker command because my local Postgres was already on 5432 so I just changed the left side port that corresponds to my local machine, but in GitHub Actions we can just use the default 5432 since there won't be a conflict.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # 1. Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: pip install --upgrade pip httpx psycopg2-binary
+      # 4. Setup Postgres — create tables and schema
+      - name: Setup Postgres schema
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql \
+            --host=localhost \
+            --port=5432 \
+            --username=postgres \
+            --dbname=github_crawler \
+            --file=sql/schema.sql
+          echo "Schema applied successfully"
+      # 5. Crawl stars — the main step
+      - name: Crawl stars
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          # GITHUB_TOKEN is automatically provided by GitHub Actions
+          # It has read:public access which is all we need for the Search API
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET=${{ github.event.inputs.target_repos || '100000' }}
+          echo "Starting crawl for ${TARGET} repositories …"
+          python scripts/crawl_stars.py --target "${TARGET}"
+      # 6. Dump DB contents to CSV
+      - name: Dump database to CSV
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          PGPASSWORD: postgres
+        run: |
+          python scripts/dump_db.py
+
+          echo "--- Database summary ---"
+          psql \
+            --host=localhost \
+            --port=5432 \
+            --username=postgres \
+            --dbname=github_crawler \
+            --command="SELECT status, repos_fetched, started_at, finished_at FROM crawl_runs ORDER BY id DESC LIMIT 5;"
+
+          echo "--- Top 10 repos by stars ---"
+          psql \
+            --host=localhost \
+            --port=5432 \
+            --username=postgres \
+            --dbname=github_crawler \
+            --command="SELECT name_with_owner, star_count FROM latest_star_counts ORDER BY star_count DESC LIMIT 10;"
+
+      # 7. Upload CSV as artifact
+      - name: Upload star counts artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: star-counts-${{ github.run_id }}
+          path: star_counts.csv
+          retention-days: 30
+      # 8. Upload full DB dump as artifact (bonus)
+      - name: Upload full Postgres dump
+        if: always()
+        env:
+          PGPASSWORD: postgres
+        run: |
+          pg_dump \
+            --host=localhost \
+            --port=5432 \
+            --username=postgres \
+            --dbname=github_crawler \
+            --format=plain \
+            --file=db_dump.sql
+        continue-on-error: true
+
+      - name: Upload DB dump artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-dump-${{ github.run_id }}
+          path: db_dump.sql
+          retention-days: 7
