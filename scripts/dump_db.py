@@ -20,13 +20,15 @@ def dump(db_url: str) -> None:
             """
             SELECT
                 node_id,
-                name_with_owner,
+                full_name,
                 owner_login,
                 name,
-                star_count,
-                recorded_at
-            FROM latest_star_counts
-            ORDER BY star_count DESC
+                stars,
+                scraped_at,
+                primary_language,
+                description
+            FROM repos_view
+            ORDER BY stars DESC
             """
         )
         rows = cur.fetchall()

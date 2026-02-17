@@ -1,161 +1,331 @@
-GitHub Repository Stars Crawler
-A production-grade GitHub crawler that collects star counts for 100,000 repositories using GitHub's GraphQL API, stores results in PostgreSQL, and runs as a daily GitHub Actions pipeline.
+# GitHub Repository Stars Crawler
 
-Architecture Overview
-GitHub GraphQL API
-        │
-        ▼
-  GitHubFetcher            ← Transport layer (HTTP, rate-limit handling, retries)
-        │
-        ▼ (anti-corruption layer)
-   GitHubRepo              ← Immutable domain model (decoupled from API shape)
-        │
-        ▼
- RepoRepository            ← Persistence layer (pure DB operations)
-        │
-        ▼
-   PostgreSQL              ← Source of truth
-Design Principles Applied
-PrincipleImplementationAnti-corruption layerGitHubFetcher._parse_repo() translates raw API JSON → GitHubRepo dataclass. DB schema is entirely independent of API field names.ImmutabilityGitHubRepo is a frozen=True dataclass. Data flows one-way from fetcher → domain object → DB.Separation of concernsThree distinct layers: fetcher (transport), domain (data model), repository (persistence). No business logic bleeds into the DB layer.Efficient updatesStar counts are append-only — new row per day per repo. Upsert on repositories only changes mutable fields. A PR gaining 10 more comments tomorrow = 10 new rows in comments, not a full re-scan.
+A high-performance GitHub repository crawler that collects star counts for **100,000 repositories in ~8 minutes** using GitHub's GraphQL API, stores results in PostgreSQL, and runs as a fully automated daily GitHub Actions pipeline.
 
-How It Works
-Bypassing the 1,000-result API limit
-GitHub's Search API returns at most 1,000 results per query. To collect 100,000 repositories, the crawler partitions the search space into star-count buckets (e.g. stars:>50000, stars:10000..50000, etc.). Each bucket yields up to 1,000 results, and cycling through ~14 buckets easily provides 100,000+ unique repos.
-Rate Limit Handling
+---
 
-Every GraphQL response includes rateLimit.remaining. When this drops below 10, the crawler proactively sleeps for 60 seconds.
-Explicit RATE_LIMITED errors trigger the same sleep.
-Transient HTTP errors use exponential backoff (2ˢ seconds on attempt s).
-Maximum 5 retries per page before failing the run.
+## Performance
 
-GitHub Actions Pipeline Steps
+| Metric | Value |
+|---|---|
+| Target repositories | 100,000 |
+| Crawl duration | ~8 minutes |
+| Throughput | ~200 repos/second |
+| Concurrency | 15 simultaneous GraphQL queries |
+| Query space | 1,760+ unique search combinations |
 
-postgres service — starts a PostgreSQL 16 container
-setup-python — installs Python 3.12
-install dependencies — pip install httpx psycopg2-binary
-setup-postgres — applies sql/schema.sql (creates all tables/views)
-crawl-stars — runs scripts/crawl_stars.py; uses ${{ secrets.GITHUB_TOKEN }} (default token, no extra permissions needed)
-dump-db — exports latest_star_counts view → star_counts.csv
-upload-artifact — uploads CSV; retained 30 days
+---
 
+## Architecture
 
-Database Schema
-Core Tables
-sqlrepositories        -- one row per repo (stable pk = GitHub node_id)
-repository_stars    -- one row per (repo, day) — append-only star snapshots
-crawl_runs          -- audit trail for every pipeline execution
-Extension Tables (already defined, populated when needed)
-sqlissues              pull_requests       comments
-pr_reviews          ci_checks
-Key Design Decisions
-Why use node_id as PK instead of id or name_with_owner?
-GitHub's node_id is a stable global identifier that survives repository renames, transfers, and forks. Using it means a renamed repo (old/name → new/name) stays as the same row — no dangling references.
-Why separate repository_stars table?
-Storing star counts separately enables:
+The project follows **Clean Architecture** principles with three distinct layers. Dependencies always point inward — infrastructure depends on application, application depends on domain, domain depends on nothing.
 
-Time-series analysis (track star velocity over time)
-Efficient daily updates (insert one new row, never touch historical data)
-The latest_star_counts view abstracts this complexity from consumers
+```
+┌─────────────────────────────────────────────┐
+│                   main.py                   │
+│         (Composition Root — wires           │
+│          all dependencies together)         │
+└──────────────────┬──────────────────────────┘
+                   │
+┌──────────────────▼──────────────────────────┐
+│            Application Layer                │
+│  CrawlApplicationService  (use case)        │
+│  CrawlerOrchestrator      (concurrency)     │
+│  MultiDimensionalQueryGenerator             │
+│  InMemoryDeduplicator                       │
+└──────────────────┬──────────────────────────┘
+                   │
+     ┌─────────────┼─────────────┐
+     ▼             ▼             ▼
+┌─────────┐  ┌─────────┐  ┌──────────────────┐
+│ Domain  │  │ Infra   │  │    Infra         │
+│ Layer   │  │ GitHub  │  │  PostgreSQL      │
+│entities │  │ Client  │  │  Storage         │
+│interfcs │  │         │  │                  │
+└─────────┘  └─────────┘  └──────────────────┘
+```
 
+### Folder Structure
 
-Scaling to 500 Million Repositories
-If this pipeline needed to collect data on 500 million repositories instead of 100,000, here is what would change:
-1. Parallelism & Sharding
-The star-bucket approach works but would need to be dramatically expanded. With 500M repos, you'd shard the crawl by:
+```
+sql/
+  └── schema.sql                   # PostgreSQL schema
+scripts
+│
+├── main.py                          # Dependency wiring only — no logic
+├── dump_db.py                       # Export results to CSV
+│
+│
+├── src/
+│   ├── domain/                      # Innermost layer — zero external dependencies
+│   │   ├── entities.py              # GitHubRepo, CrawlResult (immutable dataclasses)
+│   │   └── interfaces.py            # IRepoFetcher, IRepoStorage, IQueryGenerator, IDeduplicator
+│   │
+│   ├── application/                 # Business logic — depends only on domain
+│   │   ├── crawl_service.py         # Top-level use case orchestration
+│   │   ├── orchestrator.py          # Async concurrency management
+│   │   ├── deduplicator.py          # Repo deduplication (separated concern)
+│   │   └── query_generator.py       # Multi-dimensional query generation
+│   │
+│   └── infrastructure/              # Outermost layer — talks to external systems
+│       ├── github_client.py         # GitHub GraphQL API + anti-corruption layer
+│       └── postgres_storage.py      # PostgreSQL persistence
+│
+.github/
+    └── workflows/
+        └── crawl.yml                # Daily automated pipeline
+```
 
-Date ranges (created:2020-01-01..2020-06-30), combined with star ranges
-Language filters (language:Python stars:0..5)
-Owner type (user:, org:)
+---
 
-Each shard would be an independent worker, running in parallel across many machines (e.g., Kubernetes Jobs or AWS ECS tasks).
-2. Message Queue Architecture
-Instead of one sequential script, use a message queue (Kafka, SQS, or RabbitMQ):
+## Key Engineering Decisions
 
-A scheduler publishes crawl tasks (one task = one GraphQL search query + cursor)
-A fleet of worker processes picks up tasks, fetches pages, and publishes results to a results topic
-A writer process consumes results and batch-upserts into the DB
+### 1. Anti-Corruption Layer
 
-This decouples rate-limit bottlenecks from throughput — if GitHub throttles one worker, others keep going.
-3. Database: Partitioning & Read Replicas
-At 500M repos:
+GitHub's API returns camelCase field names (`stargazerCount`, `nameWithOwner`). The anti-corruption layer in `github_client.py` translates these into our own clean domain model before any other code touches the data.
 
-Partition repositories by owner_login hash or creation year
-Partition repository_stars by recorded_at (monthly or weekly range partitions), enabling fast pruning of old snapshots
-Use Citus (distributed Postgres) or migrate to a horizontally scalable store like CockroachDB or BigQuery for analytics
-Add read replicas to serve downstream consumers without hitting the writer
+```python
+# GitHub sends this:
+{ "nameWithOwner": "torvalds/linux", "stargazerCount": 185000 }
 
-4. Incremental Crawling
-Rather than re-crawling everything daily:
+# _parse_node() translates it to our domain model:
+GitHubRepo(name_with_owner="torvalds/linux", star_count=185000)
+```
 
-Use GitHub's Events API to detect repos that changed (pushes, stars, forks) since last crawl
-Only re-fetch repos that have updated_at > last_crawled_at
-Full re-crawl once a week; incremental updates every hour
+If GitHub renames a field tomorrow, **only one file changes** — `github_client.py`.
 
-5. Idempotency & Exactly-Once Processing
-At scale, duplicate processing is inevitable. Ensure:
+### 2. Immutable Domain Objects
 
-All upserts are idempotent (ON CONFLICT DO UPDATE)
-Worker tasks carry a crawl_run_id and task_id so duplicates are detected and skipped
-Use a distributed lock (Redis, DynamoDB) to prevent two workers claiming the same cursor
+All domain entities use `frozen=True` dataclasses. Once created, no field can be modified.
 
-6. Observability
+```python
+@dataclass(frozen=True)
+class GitHubRepo:
+    node_id:    str
+    star_count: int
+    ...
+```
 
-Emit metrics (Prometheus/CloudWatch) per worker: pages fetched, rate-limit hits, error rate
-Alert on crawl lag (expected 500M repos / N workers = expected completion time)
-Dead-letter queue for failed tasks with alerting
+Data flows one way: API → domain object → database. Accidental mutation is impossible.
 
+### 3. Dependency Injection
 
-Schema Evolution for Richer Metadata
-The schema is already designed with extension tables. Here is how each new data type would be handled efficiently:
-Issues
-sql-- issues table already defined
--- Upsert by node_id — only changed fields are updated
--- New issues = new rows; closed issues = UPDATE state = 'CLOSED'
-One upsert per issue. If 1,000 new issues appear, 1,000 rows are written. Existing rows are untouched unless their state changed.
-Pull Requests
-Same pattern as issues. The pull_requests table stores one row per PR, upserted on node_id. Fields like merged_at and commit_count are updated in-place only when they change.
-Comments (PRs and Issues)
-Comments are a classic append-heavy pattern. The comments table uses node_id as PK. When a PR gains 10 new comments today and 20 more tomorrow:
+No class creates its own dependencies. Everything is injected from `main.py`.
 
-Today: 10 INSERT rows
-Tomorrow: 20 INSERT rows (new node_ids for new comments)
-If an existing comment is edited: 1 UPDATE on its node_id (only that row is touched)
+```python
+# CrawlerOrchestrator receives these — it creates NONE of them
+orchestrator = CrawlerOrchestrator(
+    fetcher      = github_client,    # IRepoFetcher
+    generator    = query_generator,  # IQueryGenerator
+    deduplicator = deduplicator,     # IDeduplicator
+)
+```
 
-Zero full-table scans. The idx_comments_parent index makes "get all comments for PR X" fast.
-Commits Inside Pull Requests
-Add a commits table with (node_id PK, pr_node_id FK, sha, author_login, committed_at). Commits are immutable once merged, so this table is append-only after the PR closes.
-Reviews on PRs
-The pr_reviews table is already defined. One row per review, upserted on node_id. A reviewer who changes from CHANGES_REQUESTED to APPROVED = 1 UPDATE on their review row.
-CI Checks
-The ci_checks table supports status transitions (queued → in_progress → completed) via UPDATE on the existing row's conclusion field. A single CI run = 1 row updated, not replaced.
-General Schema Evolution Strategy
+This means every class is independently testable with fake/mock implementations.
 
-Add columns as nullable — never break existing queries
-New entity types = new tables — never add columns to repositories for unrelated data
-Use node_id as FK everywhere — stable references across renames
-Never delete data — soft deletes via deleted_at TIMESTAMPTZ column
-Views as contracts — downstream consumers use views (latest_star_counts), so the underlying table structure can change without breaking them
+### 4. Async Concurrency — 15 Simultaneous Queries
 
+The single biggest performance improvement. Instead of waiting for each query to finish before starting the next, 15 queries run simultaneously using `asyncio` + `httpx.AsyncClient`.
 
-Running Locally
-bash# Start Postgres
+```
+Sequential (old):  [query 1]──[query 2]──[query 3]──[query 4]...  83 min
+Concurrent (new):  [query 1 ]
+                   [query 2 ]   all finish around the same time    ~8 min
+                   [query 3 ]
+                   ... ×15
+```
+
+`asyncio.Semaphore(15)` acts as a gate — at most 15 queries in flight at once.
+
+### 5. Multi-Dimensional Query Generation
+
+GitHub's Search API returns at most 1,000 results per query. To reach 100,000 repositories, queries are split across three dimensions:
+
+```
+language × star_range × creation_year
+
+20 languages × 8 star ranges × 10 years = 1,600 queries
++ 20 × 8 fallback (no year filter)      =   160 queries
+Total: 1,760 queries × 1,000 max each   = 1,760,000 potential repos
+```
+
+Each combination is a unique, non-overlapping search — no duplicates, full coverage.
+
+### 6. JSONB Flexible Schema
+
+The `extra JSONB` column stores metadata that doesn't need a dedicated column. New fields can be added tomorrow with zero database migrations — just add a key to the JSON dict.
+
+```sql
+-- Current extra column contains:
+{ "description": "...", "primary_language": "Python", "is_private": false }
+
+-- Tomorrow add forks, topics, license — zero ALTER TABLE needed
+{ "description": "...", "primary_language": "Python", "forks_count": 5000 }
+```
+
+### 7. Separation of Concerns
+
+Each class has exactly one job:
+
+| Class | Single Responsibility |
+|---|---|
+| `GitHubClient` | Communicate with GitHub API |
+| `PostgresRepoStorage` | Persist data to PostgreSQL |
+| `MultiDimensionalQueryGenerator` | Generate search query strings |
+| `InMemoryDeduplicator` | Track and filter duplicate repos |
+| `CrawlerOrchestrator` | Manage async concurrency |
+| `CrawlApplicationService` | Sequence the full crawl use case |
+| `main.py` | Wire dependencies together |
+
+---
+
+## Database Schema
+
+```sql
+repositories (
+    node_id     TEXT PRIMARY KEY,      -- GitHub's stable global ID
+    full_name   TEXT UNIQUE,           -- "owner/repo" format
+    name        TEXT,
+    owner_login TEXT,
+    stars       INTEGER,               -- current star count
+    scraped_at  TIMESTAMPTZ,           -- when we last crawled it
+    extra       JSONB                  -- flexible metadata (language, description, etc.)
+)
+
+crawl_runs (
+    id          SERIAL PRIMARY KEY,
+    started_at  TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    total_repos INTEGER,
+    status      TEXT,                  -- 'running' | 'success' | 'failed'
+    error_msg   TEXT
+)
+```
+
+The `repos_view` view exposes JSONB fields as typed columns for easy querying:
+
+```sql
+SELECT full_name, stars, primary_language
+FROM repos_view
+WHERE primary_language = 'Python'
+ORDER BY stars DESC;
+```
+
+---
+
+## GitHub Actions Pipeline
+
+The pipeline runs automatically every day at **02:00 UTC (07:00 AM Karachi)** and can also be triggered manually.
+
+```
+Step 1: Start PostgreSQL service container
+Step 2: Checkout code
+Step 3: Set up Python 3.12
+Step 4: Install dependencies (httpx, psycopg2-binary)
+Step 5: Apply database schema
+Step 6: Crawl 100,000 repos via GitHub GraphQL API    ← ~8 minutes
+Step 7: Export results to CSV
+Step 8: Upload CSV as downloadable artifact (kept 30 days)
+Step 9: Upload full DB dump as artifact
+```
+
+No secrets or elevated permissions required — uses the default `GITHUB_TOKEN` automatically provided by GitHub Actions.
+
+---
+
+## Local Setup
+
+### Prerequisites
+
+- Python 3.12+
+- Docker Desktop
+- Git
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/YOUR_USERNAME/github-crawler.git
+cd github-crawler
+```
+
+### 2. Install dependencies
+
+```bash
+pip install httpx psycopg2-binary
+```
+
+### 3. Start PostgreSQL
+
+```bash
 docker run -d \
   --name gh-crawler-pg \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=github_crawler \
-  -p 5432:5432 \
+  -p 5433:5432 \
   postgres:16
+```
 
-# Apply schema
-PGPASSWORD=postgres psql -h localhost -U postgres -d github_crawler -f sql/schema.sql
+### 4. Apply schema
 
-# Install deps
-pip install httpx psycopg2-binary
+```bash
+docker exec -i gh-crawler-pg psql -U postgres -d github_crawler < sql/schema.sql
+```
 
-# Run crawl (set your token)
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/github_crawler"
+### 5. Set environment variables
+
+```bash
+# Mac/Linux
+export DATABASE_URL="postgresql://postgres:postgres@localhost:5433/github_crawler"
 export GITHUB_TOKEN="ghp_your_token_here"
-python scripts/crawl_stars.py --target 100000
 
-# Dump results
-python scripts/dump_db.py
+# Windows (Command Prompt)
+set DATABASE_URL=postgresql://postgres:postgres@localhost:5433/github_crawler
+set GITHUB_TOKEN=ghp_your_token_here
+```
+
+### 6. Run a quick test (500 repos)
+
+```bash
+python main.py --target 500
+```
+
+### 7. Run the full crawl
+
+```bash
+python main.py --target 100000
+```
+
+### 8. Export results to CSV
+
+```bash
+python dump_db.py
+```
+
+---
+
+## Querying the Data
+
+**Top 10 repos by stars:**
+```sql
+SELECT full_name, stars
+FROM repos_view
+ORDER BY stars DESC
+LIMIT 10;
+```
+
+**Most popular Python repos:**
+```sql
+SELECT full_name, stars
+FROM repos_view
+WHERE primary_language = 'Python'
+ORDER BY stars DESC
+LIMIT 20;
+```
+
+**Crawl history:**
+```sql
+SELECT id, status, total_repos, started_at, finished_at
+FROM crawl_runs
+ORDER BY id DESC;
+```
+
