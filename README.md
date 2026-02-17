@@ -9,7 +9,7 @@ A high-performance GitHub repository crawler that collects star counts for **100
 | Metric | Value |
 |---|---|
 | Target repositories | 100,000 |
-| Crawl duration | ~8 minutes |
+| Crawl duration | ~6 minutes |
 | Throughput | ~200 repos/second |
 | Concurrency | 15 simultaneous GraphQL queries |
 | Query space | 1,760+ unique search combinations |
