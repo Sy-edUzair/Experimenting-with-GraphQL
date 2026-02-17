@@ -90,11 +90,11 @@ class GitHubClient(IRepoFetcher):
         """
         try:
             return GitHubRepo(
-                node_id          = node["id"],
-                name_with_owner  = node["nameWithOwner"],
-                name             = node["name"],
-                owner_login      = node["owner"]["login"],
-                description      = node.get("description"),
+                node_id = node["id"],
+                name_with_owner = node["nameWithOwner"],
+                name = node["name"],
+                owner_login = node["owner"]["login"],
+                description = node.get("description"),
                 primary_language = (
                     node["primaryLanguage"]["name"]
                     if node.get("primaryLanguage") else None
@@ -139,10 +139,10 @@ class GitHubClient(IRepoFetcher):
                 # Check for GraphQL-level errors (different from HTTP errors)
                 if "errors" in data:
                     for err in data["errors"]:
-                        if err.get("type") == "RATE_LIMITED":
+                        if err.get("type") == "RATE_LIMITED" or err.get("type") == "RATE_LIMIT":
                             raise RateLimitError()
                     log.warning("GraphQL errors for query %.60s: %s", query_str, data["errors"])
-
+                
                 rate = data["data"]["rateLimit"]
                 search = data["data"]["search"]
                 page_info = search["pageInfo"]
