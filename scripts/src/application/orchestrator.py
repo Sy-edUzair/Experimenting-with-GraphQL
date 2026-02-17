@@ -8,7 +8,7 @@ from src.domain.interfaces import IRepoFetcher, IQueryGenerator, IDeduplicator
 
 log = logging.getLogger(__name__)
 
-MAX_CONCURRENT= 20 
+MAX_CONCURRENT= 15    
 RATE_LIMIT_SLEEP = 60  
 
 
